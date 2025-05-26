@@ -1,6 +1,6 @@
 """
     save_reactive_path(iso::Iso,
-        coords::AbstractMatrix=getcoords(iso.data) |> cpu;
+        coords::AbstractMatrix=coords(iso.data) |> cpu;
         sigma=1,
         maxjump=1,
         out="out/reactive_path.pdb",
@@ -24,28 +24,29 @@ See also `reactive_path`.
 - `ids`: The IDs of the reactive path.
 
 """
-function save_reactive_path(iso::Iso, coords::AbstractMatrix=getcoords(iso.data) |> cpu;
+function save_reactive_path(iso::Iso, coords::AbstractMatrix=coords(iso.data) |> cpu;
     sigma=1,
     maxjump=1,
     out="out/reactive_path.pdb",
     source=pdbfile(iso.data),
+    chi = chicoords(iso, coords) |> vec |> cpu,
+    weights = Weights(OpenMM.masses(iso.data.sim)) * 8,
     kwargs...)
 
-    chi = chis(iso) |> vec |> cpu
     ids = reactive_path(chi, coords; sigma, maxjump, kwargs...)
     if length(ids) == 0
         @warn "The computed reactive path is empty. Try adjusting the `sigma` parameter."
         return ids
     end
     plot_reactive_path(ids, chi) |> display
-    path = centercoords(aligntrajectory(coords[:, ids]))
+    path = aligntrajectory(coords[:, ids]; weights)
     println("saving reactive path of length $(length(ids)) to $out")
     mkpath(dirname(out))
     save_trajectory(out, path, top=source)
     return ids
 end
 
-""" reactive_path(xi::AbstractVector, coords::AbstractMatrix; sigma, maxjump=1, method=QuantilePath(0.05), normalize=false, sortincreasing=true)
+""" reactive_path(xi::AbstractVector, coords::AbstractMatrix; sigma, minjump=0, maxjump=1, method=QuantilePath(0.05), normalize=false, sortincreasing=true)
 
 Find the maximum likelihood path (under the model of brownion motion with noise `sigma`) through `coords` with times `xi`.
 Supports either CPU or GPU arrays.
@@ -54,20 +55,20 @@ Supports either CPU or GPU arrays.
 - `coords`:  (ndim x npoints) matrix of coordinates.
 - `xi`: time coordinate of the npoints points
 - `sigma`: spatial noise strength of the model.
-- `maxjump`: upper bound to the jump in time `xi` along the path.
+- `minjump`, `maxjump`: lower and upper bound to the jump in time `xi` along the path. Tighter bounds reduce the computational cost.
 - `method`: either `FromToPath`,  `QuantilePath`, `FullPath` or `MaxPath`, specifying the end points of the path
 - `normalize`: whether to normalize all `coords` first
 - `sortincreasing`: return the path from lower to higher `xi` values
 """
-function reactive_path(xi::AbstractVector, coords::AbstractMatrix; sigma, maxjump=1, method=QuantilePath(0.05), normalize=false, sortincreasing=true)
+function reactive_path(xi::AbstractVector, coords::AbstractMatrix; sigma, minjump=0, maxjump=1, method=QuantilePath(0.05), normalize=false, sortincreasing=true)
     from, to = fromto(method, xi)
     nco = normalize ? coords ./ norm(coords, Inf) : coords
-    ids = shortestchain(nco, xi, from, to; sigma, maxjump)
+    ids = shortestchain(nco, xi, from, to; sigma, minjump, maxjump)
     sortincreasing && !isincreasing(ids) && reverse!(ids)
     return ids
 end
 
-reactive_path(iso::Iso; kwargs...) = reactive_path(chis(iso) |> vec |> cpu, getcoords(iso.data); kwargs...)
+reactive_path(iso::Iso; kwargs...) = reactive_path(chis(iso) |> vec |> cpu, coords(iso.data); kwargs...)
 
 # heuristic whether a sequence is increasing
 isincreasing(x) = sum(diff(x) .> 0) > length(x) / 2
@@ -101,19 +102,23 @@ fromto(::FullPath, xi) = (1, length(xi))
 fromto(::MaxPath, xi) = (argmin(xi), argmax(xi))
 
 # compute the shortest chain through the samples xs with reaction coordinate xi
-function shortestchain(xs, xi, from, to; sigma, maxjump)
-    dxs = pairdist(xs)
-    logp = finite_dimensional_distribution(dxs, xi, sigma, size(xs, 1), maxjump)
-    ids = shortestpath(-logp, from, to)
+function shortestchain(xs, xi, from, to; sigma, minjump, maxjump)
+    CUDA.has_cuda_gpu() && (xs = cu(xs))
+    println("Computing pairwise distances")
+    dt = xi' .- xi
+    mask = minjump .<= dt .<= maxjump
+    @time dxs = pairwise_aligned_rmsd(xs, mask) |> cpu
+    logp = finite_dimensional_distribution(dxs, dt, sigma, size(xs, 1), minjump, maxjump)
+    println("Computing shortest path")
+    @time ids = shortestpath(-logp, from, to)
     return ids
 end
 
 # path probabilities c.f. https://en.wikipedia.org/wiki/Onsager-Machlup_function
 # this is the dense "vectorized" implementation which is slightly faster on cpu but works and is much faster on gpu
-function finite_dimensional_distribution(dxs, xi, sigma, dim, maxjump)
-    dt = xi' .- xi
+function finite_dimensional_distribution(dxs, dt, sigma, dim, minjump, maxjump)
     map(dxs, dt) do dx, dt
-        0 < dt < maxjump || return -Inf
+        minjump <= dt <= maxjump || return -Inf
         v = dx / dt
         L = 1 / 2 * (v / sigma)^2
         s = (-dim / 2) * Base.log(2 * pi * sigma^2 * dt)

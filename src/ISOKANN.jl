@@ -5,12 +5,13 @@ module ISOKANN
 #using Startup           # precompiles most used packages
 #include("forced/IsoForce.jl")
 
+import cuDNN
 import StochasticDiffEq, Flux, CUDA, PCCAPlus, Plots
 
 using ProgressMeter
 using Plots
 
-using LinearAlgebra: norm, dot, cross, diag, svd, pinv, I, schur
+using LinearAlgebra: norm, dot, cross, diag, svd, pinv, I, schur, qr
 using StatsBase: mean, sample, mean_and_std
 using StaticArrays: SVector
 using StatsBase: sample, quantile
@@ -75,7 +76,6 @@ export Doublewell, Triplewell, MuellerBrown
 export chis
 export SimulationData
 export addcoords, addcoords!, resample_kde!, resample_kde
-export getxs, getys
 export exit_rates
 export load_trajectory, save_trajectory
 export savecoords
@@ -85,10 +85,12 @@ export data_from_trajectory, mergedata
 export trajectorydata_bursts, trajectorydata_linear
 export reactionpath_minimum, reactionpath_ode
 export chicoords
+export ca_rmsd
+export coords, features, propcoords, propfeatures
 
 
-include("subsample.jl")  # adaptive sampling
-include("pairdists.jl")       # pair distances
+include("utils/subsample.jl")  # adaptive sampling
+include("utils/pairdists.jl")       # pair distances
 include("simulation.jl")      # Interface for simulations
 include("models.jl")          # the neural network models/architectures
 #include("simulators/molly.jl")           # interface to work with Molly Systems
@@ -122,7 +124,8 @@ include("reactionpath.jl")
 #include("IsoMu/IsoMu.jl")
 #include("vgv/vgv.jl")
 
-include("makie.jl")
-include("bonito.jl")
+include("utils/makie.jl")
+include("utils/bonito.jl")
 
+include("utils/picking.jl")
 end

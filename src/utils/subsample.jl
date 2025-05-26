@@ -118,10 +118,23 @@ function kde_needles(xs, n=10; bandwidth, target=Distributions.Uniform())
     return needles
 end
 
-function resample_kde_ash(xs, ys, n=10; m=50, target=Distributions.Uniform())
+"""
+    resample_kde_ash(xs, ys, n=10; m=20, target=Distributions.Uniform())
+
+Pick `n` indices `iys` of the samples `ys` such that `[xs; ys[iys]]` approximates the `target` distribution.
+Approximates the density through an AverageShiftedHistogram on the range `rng` with window width `m`.
+"""
+function resample_kde_ash(xs, ys, n=10; m=20, target=Distributions.Uniform(), rng=0:0.001:1)
+    debug = false
     iys = zeros(Int, n)
-    rng = 0:0.001:1
+    
     kde = AverageShiftedHistograms.ash(xs; rng, m)
+    while minimum(kde.density) <= 0.1  || maximum(kde.density) > 3 # underdeveloped heuristic helping in the case of large gaps
+        m = round(Int, m*1.2)
+        kde = AverageShiftedHistograms.ash(xs; rng, m)
+    end
+
+    debug && plot(kde)|>display
     #display(kde)
     target = to_pdf(target)(rng)
     for i in 1:n
@@ -137,5 +150,6 @@ function resample_kde_ash(xs, ys, n=10; m=50, target=Distributions.Uniform())
         AverageShiftedHistograms.ash!(kde, ys[iy])
         iys[i] = iy
     end
+    debug && @show m, ys[iys]
     return iys
 end

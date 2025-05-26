@@ -68,7 +68,7 @@ function plot_training(iso; subdata=nothing)
 end
 
 function plot_chi(iso; target=true)
-    xs = getxs(iso.data)
+    xs = features(iso.data)
     chi = iso.model(xs) |> cpu
     xs = xs |> cpu
 
@@ -79,8 +79,9 @@ function plot_chi(iso; target=true)
     elseif size(xs, 1) == 66  # TODO: dispatch on simulation
         scatter_ramachandran(xs, chi)
     else
-        scatter(chi'; ylims=autolims(chi), xlabel="#")
-        target && scatter!(isotarget(iso)' |> cpu)
+        plot()
+        target && scatter!(isotarget(iso)' |> cpu, label="SK\\chi", markerstrokewidth=0.1, markersize=2)
+        scatter!(chi'; ylims=autolims(chi), xlabel="#", label="\\chi", markerstrokewidth=0.1, markersize=2)
     end
 
 
@@ -120,11 +121,19 @@ end
 # good colors
 # berlin, delta, roma, tofino, tokyo
 
+<<<<<<< HEAD
 scatter_ramachandran(iso::Iso;kwargs...) = scatter_ramachandran(getcoords(iso.data) |> cpu, iso.model(getxs(iso.data)) |> cpu |> vec;kwargs...)
 
 scatter_ramachandran(x, model; kwargs...) = scatter_ramachandran(x, vec(model(x)); kwargs...)
 scatter_ramachandran(x, mat::AbstractMatrix; kwargs...) = plot(map(eachrow(mat)) do row
     scatter_ramachandran(x, vec(row))
+=======
+scatter_ramachandran(iso::Iso; kwargs...) = scatter_ramachandran(coords(iso.data) |> cpu, iso.model(features(iso.data)) |> cpu; kwargs...)
+
+scatter_ramachandran(x, model; kwargs...) = scatter_ramachandran(x, vec(model(x)); kwargs...)
+scatter_ramachandran(x, mat::AbstractMatrix; kwargs...) = plot(map(enumerate(eachrow(mat))) do (i, row)
+    scatter_ramachandran(x, vec(row); title="$i", kwargs...)
+>>>>>>> upstream
 end...)
 
 function scatter_ramachandran(x::AbstractMatrix, z::Union{AbstractVector,Nothing}=nothing; kwargs...)
@@ -235,7 +244,7 @@ function autoplot(secs=10)
         function plotcallback(; iso, subdata, kwargs...)
             p = plot_training(iso; subdata)
             try
-                display(p)
+                display("image/png", p)
             catch e
                 e isa InterruptException && rethrow(e)
                 @warn "could not print ($e)"
@@ -244,11 +253,11 @@ function autoplot(secs=10)
 end
 
 function plot_reactioncoords(iso)
-    coords = getcoords(iso.data)
-    dim = size(coords, 1)
+    xs = coords(iso.data)
+    dim = size(xs, 1)
     if dim == 66  # alanine dipeptide
         chi = chis(iso)
-        scatter_ramachandran(coords, chi)
+        scatter_ramachandran(xs, chi)
     elseif dim == 219
         inds = (41, 49)
         inds = (20, 62)

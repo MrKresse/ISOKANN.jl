@@ -1,4 +1,3 @@
-export getcoords
 ## Interface for simulations
 
 ## This is supposed to contain the (Molecular) system + integrator
@@ -7,7 +6,7 @@ export getcoords
     abstract type IsoSimulation
 
 Abstract type representing an IsoSimulation.
-Should implement the methods `getcoords`, `propagate`, `dim`
+Should implement the methods `coords`, `propagate`, `dim`
 
 """
 abstract type IsoSimulation end
@@ -21,7 +20,7 @@ function Base.show(io::IO, mime::MIME"text/plain", sim::IsoSimulation)#
 end
 
 function randx0(sim::IsoSimulation, nx)
-    x0 = reshape(getcoords(sim), :, 1)
+    x0 = reshape(coords(sim), :, 1)
     xs = reshape(propagate(sim, x0, nx), :, nx)
     return xs
 end
@@ -29,8 +28,13 @@ end
 trajectory(sim::IsoSimulation, steps) = error("not implemented")
 laggedtrajectory(sim::IsoSimulation, nx) = error("not implemented")
 
-#laggedtrajectory(sim::OpenMMSimulation, n_lags, steps_per_lag=steps(sim); x0=getcoords(sim))
-#    trajectory(sim, n_lags * steps_per_lag; saveevery=steps_per_lag, x0)
+Base.@kwdef mutable struct ExternalSimulation <: IsoSimulation
+    pdb = nothing
+end
+
+Base.show(io::IO, mime::MIME"text/plain", sim::ExternalSimulation) = print(io, "$(typeof(sim)) of $(sim.pdb)")
+pdbfile(sim::ExternalSimulation) = sim.pdb
+masses(sim::ExternalSimulation) = nothing
 
 
 #TODO:
@@ -95,7 +99,7 @@ function features(d::SimulationData, x)
     return d.featurizer(x)
 end
 
-defaultmodel(d::SimulationData; kwargs...) = defaultmodel(d.sim; n=featuredim(d), kwargs...)
+defaultmodel(d::SimulationData; kwargs...) = pairnet(n=featuredim(d), kwargs...)
 featuredim(d::SimulationData) = size(d.features[1], 1)
 nk(d::SimulationData) = size(d.features[2], 2)
 
@@ -105,20 +109,21 @@ Base.lastindex(d::SimulationData) = length(d)
 # facilitates easy indexing into the data, returning a new data object
 Base.getindex(d::SimulationData, i) = SimulationData(d.sim, getobs(d.features, i), getobs(d.coords, i), d.featurizer)
 
-MLUtils.getobs(d::SimulationData) = d.features
+@deprecate getcoords coords
+@deprecate getxs features
+@deprecate getys propfeatures
+coords(d::SimulationData) = d.coords[1]
+features(d::SimulationData) = d.features[1]
+propcoords(d::SimulationData) = d.coords[2]
+propfeatures(d::SimulationData) = d.features[2]
 
-getcoords(d::SimulationData) = d.coords[1]
+"""
+    flattenlast(x)
 
-#getcoords(d::SimulationData) = d.coords[1]
-#getkoopcoords(d::SimulationData) = d.coords[2]
-#getfeatures(d::SimulationData) = d.features[1]
-#getkoopfeatures(d::SimulationData) = d.features[2]
-
-
+Concatenate all but the first dimension of `x`. Usefull to convert a tensor of samples into a matrix """
 flattenlast(x) = reshape(x, size(x, 1), :)
 
-getxs(d::SimulationData) = getxs(d.features)
-getys(d::SimulationData) = getys(d.features)
+MLUtils.getobs(d::SimulationData) = d.features
 
 pdbfile(s::SimulationData) = pdbfile(s.sim)
 
@@ -180,8 +185,20 @@ function resample_kde(data::SimulationData, model, n; bandwidth=0.02, unique=fal
         (:)
     end
 
+    
+
+
+
     chix = data.features[1] |> model |> vec |> cpu
     chiy = data.features[2] |> flattenlast |> x -> getindex(x, :, selinds) |> model |> vec |> cpu
+
+
+    m1 = min(minimum(chix), minimum(chiy))
+    m2 = max(maximum(chix), maximum(chiy))
+    
+    chix = (chix .- m1) ./ (m2-m1)
+    chiy = (chiy .- m1) ./ (m2 - m1)
+    
 
     iy = resample_kde_ash(chix, chiy, n)
 
@@ -239,8 +256,18 @@ x0---x----x---
     / |  / |
     y y  y y
 """
-function trajectorydata_bursts(sim::IsoSimulation, steps, nk; x0=getcoords(sim), kwargs...)
+function trajectorydata_bursts(sim::IsoSimulation, steps, nk; x0=coords(sim), kwargs...)
     xs = laggedtrajectory(sim, steps; x0)
     ys = propagate(sim, xs, nk)
     SimulationData(sim, (xs, ys); kwargs...)
+end
+
+function lucadata(; path="/scratch/htc/ldonati/vilin/final/output/", nk=10, frame=1)
+    xs = readchemfile(path * "trajectory_solute.dcd")
+    dim, nx = size(xs)
+    ys = similar(xs, dim, nk, nx)
+    @showprogress for i in 1:nx, k in 1:nk
+        ys[:, k, i] = readchemfile(path * "final_states/xt_$(i-1)_r$(k-1).dcd", frame)
+    end
+    return xs, ys
 end

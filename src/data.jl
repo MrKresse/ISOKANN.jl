@@ -11,11 +11,7 @@ ys is a tensor of size (d, k, n) where k is the number of koopman samples.
 """
 DataTuple = Tuple{<:AbstractArray{T},<:AbstractArray{T,3}} where {T<:Number}
 
-getxs(x) = getxs(getobs(x))
-getys(x) = getys(getobs(x))
 
-getxs(d::Tuple) = d[1]
-getys(d::Tuple) = d[2]
 
 """ collapse the first and second dimension of the array `A` into the first dimension """
 function flattenfirst(A)
@@ -87,19 +83,24 @@ end
 Generate the lag-1 data from the trajectory `xs`.
 If `reverse` is true, also take the time-reversed lag-1 data.
 """
-function data_from_trajectory(xs::AbstractMatrix; reverse=false)
+function data_from_trajectory(xs::AbstractMatrix; reverse=false, stride=1)
     if reverse
-        @views ys = stack([xs[:, 3:end], xs[:, 1:end-2]])
-        ys = permutedims(ys, [1, 3, 2])
-        #ys = similar(xs, size(xs, 1, 2, size(xs, 2) - 2))
+        @views ys = stack([xs[:, 1:stride:end-2], xs[:, 3:stride:end]], dims=2) 
+        #ys = similar(xs, size(xs, 1), 2, size(xs, 2) - 2)
         #@views ys[:, 1, :] .= xs[:, 3:end]
         #@views ys[:, 2, :] .= xs[:, 1:end-2]
-        xs = xs[:, 2:end-1]
+        xs = xs[:, 2:stride:end-1]
     else
-        ys = unsqueeze(xs[:, 2:end], dims=2)
-        xs = xs[:, 1:end-1]
+        ys = unsqueeze(xs[:, 2:stride:end], dims=2)
+        xs = xs[:, 1:stride:end-1]
     end
     return xs, ys
+end
+
+function data_from_trajectories(xss::AbstractVector{<:AbstractMatrix}; kwargs...)
+    mapreduce(mergedata, xss) do xs
+        data_from_trajectory(xs; kwargs...)
+    end
 end
 
 """
@@ -146,9 +147,9 @@ end
 uniqueidx(v) = unique(i -> v[i], eachindex(v))
 
 function exportsorted(iso, path="out/sorted.pdb")
-    xs = ISOKANN.getxs(iso.data)
+    xs = features(iso.data)
     p = iso.model(xs) |> vec |> sortperm
-    xs = ISOKANN.getcoords(iso.data)
+    xs = ISOKANN.coords(iso.data)
     println("saving sorted data to $path")
     traj = ISOKANN.aligntrajectory(xs[:, p] |> cpu)
     save_trajectory(path, traj, top=pdbfile(iso.data))

@@ -3,9 +3,20 @@
 
 Regularized(opt, reg=1e-4) = Optimisers.OptimiserChain(Optimisers.WeightDecay(reg), opt)
 
-""" Adam with L2 regularization. Note that this is different from AdamW (Adam+WeightDecay) (c.f. Decay vs L2 Reg.) """
+"""    
+    AdamRegularized(adam=1e-3, reg=1e-4)
+
+Constructs an optimizer that combines weight decay regularization with ADAM. 
+Uses `reg` for the weight decay parameter and `lr` as the learning rate for ADAM.
+Note that this is different from AdamW (Adam+WeightDecay) (c.f. Decay vs L2 Reg.). """
 AdamRegularized(adam=1e-3, reg=1e-4) = Optimisers.OptimiserChain(Optimisers.WeightDecay(reg), Optimisers.Adam(adam))
 
+"""    
+    NesterovRegularized(; lr=1e-3, reg=1e-4)
+
+Constructs an optimizer that combines weight decay regularization with Nesterov momentum.
+Uses `reg` for the weight decay parameter and `lr` as the learning rate for Nesterov acceleration. 
+This worked well as alternative where ADAM had problems."""
 NesterovRegularized(lr=1e-3, reg=1e-4) = Optimisers.OptimiserChain(Optimisers.WeightDecay(reg), Optimisers.Nesterov(lr))
 
 optimizerstring(opt) = typeof(opt)
@@ -23,8 +34,9 @@ outputdim(model::Flux.Dense) = size(model.weight, 1)
 #iscuda(m::Flux.Chain) = first(Flux.trainables(m)) isa CuArray
 iscuda(m::Flux.Chain) = typeof(m).parameters[1].parameters[end].parameters[end] isa CuArray
 
-defaultmodel((x, y)) = smallnet(size(x, 1)) # TODO: probably we want a wiser choice here
 
+defaultmodel(x::Tuple) = pairnet(n=size(x[1],1))
+defaultmodel(x; n) = ISOKANN.pairnet(; n)
 
 """ convenience wrapper returning the provided model with the default AdamW optimiser """
 model_with_opt(model, learnrate=1e-2, decay=1e-5) =
@@ -68,6 +80,14 @@ function pairnet(; n::Int, layers=3, features=identity, activation=Flux.sigmoid,
     )
     return nn
 end
+
+function densenet(; layers::Vector{Int}, activation=Flux.sigmoid, lastactivation=identity, layernorm=true)
+    L = [Flux.Dense(layers[i], layers[i+1], activation) for i in 1:length(layers)-2]
+    L = [L; Flux.Dense(layers[end-1], layers[end], lastactivation)]
+    layernorm && (L = [Flux.LayerNorm(layers[1]); L])
+    Flux.Chain(L...)
+end
+
 
 # TODO: take over previous activation function.
 """ Given a model and return a copy with its last layer replaced with given output dimension `n` """

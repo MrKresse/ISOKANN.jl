@@ -21,10 +21,17 @@ function Iso(data;
     autoplot=0,
     validation=nothing,
     loggers=[],
+    transform = nothing,
     kwargs...)
 
     opt = Flux.setup(opt, model)
-    transform = outputdim(model) == 1 ? TransformShiftscale() : TransformISA()
+    if isnothing(transform)
+        if outputdim(model) == 1
+            transform = TransformShiftscale()
+        else
+            transform = TransformISA()
+        end
+    end
 
     autoplot > 0 && push!(loggers, ISOKANN.autoplot(autoplot))
     isnothing(validation) || push!(loggers, ValidationLossLogger(data=validation))
@@ -96,12 +103,16 @@ function validationloss(iso, data)
     kx = iso.model(xs) |> vec
     ky = StatsBase.mean(iso.model(ys), dims=2) |> vec
 
+    kx = shiftscale(kx)
+
     unit = fill!(copy(kx), 1)
     kx = hcat(kx, unit)
     ky = hcat(ky, unit)
 
+
+
     #  kx = ky * A
-    return mean(abs2, ky * (kx \ ky) - kx)
+    return mean(abs2, (ky*(ky\kx)-kx)[:, 1])
 end
 
 
@@ -125,9 +136,15 @@ function train_batch!(model, xs::AbstractMatrix, ys::AbstractMatrix, opt, miniba
     return ls / numobs(xs)
 end
 
-chis(iso::Iso) = iso.model(getxs(iso.data))
+chis(iso::Iso) = iso.model(features(iso.data))
 chicoords(iso::Iso, xs) = iso.model(features(iso.data, iscuda(iso.model) ? gpu(xs) : xs))
 isotarget(iso::Iso) = isotarget(iso.model, getobs(iso.data)..., iso.transform)
+
+coords(iso::Iso) = coords(iso.data)
+features(iso::Iso) = features(iso.data)
+propcoords(iso::Iso) = propcoords(iso.data)
+propfeatures(iso::Iso) = propfeatures(iso.data)
+
 
 # add new datapoints to iso, starting at positions `coords`
 addcoords!(iso::Iso, coords) = (iso.data = addcoords(iso.data, coords); nothing)
@@ -139,9 +156,11 @@ resample_strat!(iso, ny; kwargs...) = (iso.data = resample_strat(iso.data, iso.m
 #Optimisers.adjust!(iso::Iso; kwargs...) = Optimisers.adjust!(iso.opt; kwargs...)
 #Optimisers.setup(iso::Iso) = (iso.opt = Optimisers.setup(iso.opt, iso.model))
 
-gpu(iso::Iso) = Iso(Flux.gpu(iso.model), Flux.gpu(iso.opt), Flux.gpu(iso.data), iso.transform, iso.losses, gpu.(iso.loggers), iso.minibatch)
-cpu(iso::Iso) = Iso(Flux.cpu(iso.model), Flux.cpu(iso.opt), Flux.cpu(iso.data), iso.transform, iso.losses, iso.loggers, iso.minibatch)
+# TODO: should this handled via @functor?
+gpu(iso::Iso) = Iso(Flux.gpu(iso.model), Flux.gpu(iso.opt), Flux.gpu(iso.data), Flux.gpu(iso.transform), iso.losses, gpu.(iso.loggers), iso.minibatch)
+cpu(iso::Iso) = Iso(Flux.cpu(iso.model), Flux.cpu(iso.opt), Flux.cpu(iso.data), Flux.cpu(iso.transform), iso.losses, iso.loggers, iso.minibatch)
 
+<<<<<<< HEAD
 
 #function Base.show(io::IO, mime::MIME"text/plain", iso::Iso)
 #    println(io, typeof(iso), ":")
@@ -154,6 +173,18 @@ cpu(iso::Iso) = Iso(Flux.cpu(iso.model), Flux.cpu(iso.opt), Flux.cpu(iso.data), 
 #    length(iso.losses) > 0 && println(io, " loss: $(iso.losses[end]) (length: $(length(iso.losses)))")
 #end
 
+=======
+function Base.show(io::IO, mime::MIME"text/plain", iso::Iso)
+    println(io, "Iso: ")
+    println(io, " model: $(iso.model.layers)")
+    println(io, first(" transform: $(iso.transform)", 160))
+    println(io, " opt: $(optimizerstring(iso.opt))")
+    println(io, " minibatch: $(iso.minibatch)")
+    println(io, " loggers: $(length(iso.loggers))")
+    println(io, " data: $(size.(getobs(iso.data))), $(typeof(getobs(iso.data)))")
+    length(iso.losses) > 0 && println(io, " loss: $(iso.losses[end]) (length: $(length(iso.losses)))")
+end
+>>>>>>> upstream
 
 """
     runadaptive!(iso; generations=1, nx=10, iter=100, cutoff=Inf)
@@ -161,7 +192,7 @@ cpu(iso::Iso) = Iso(Flux.cpu(iso.model), Flux.cpu(iso.opt), Flux.cpu(iso.data), 
 Train iso with adaptive sampling. Sample `nx` new data points followed by `iter` isokann iterations and repeat this `generations` times.
 `cutoff` specifies the maximal data size, after which new data overwrites the oldest data.
 """
-function runadaptive!(iso; generations=1, iter=100, cutoff=Inf, extrapolates=0, extrapolation=0.01, kde=1)
+function runadaptive!(iso; generations=1, iter=100, cutoff=Inf, extrapolates=0, extrapolation=0.01, kde=1, unique=true)
     p = ProgressMeter.Progress(generations)
     t_kde = 0.0
     t_train = 0.
@@ -169,7 +200,7 @@ function runadaptive!(iso; generations=1, iter=100, cutoff=Inf, extrapolates=0, 
     for g in 1:generations
         GC.gc()
 
-        t_kde += @elapsed ISOKANN.resample_kde!(iso, kde)
+        t_kde += @elapsed ISOKANN.resample_kde!(iso, kde; unique)
 
         t_extra += @elapsed ISOKANN.addextrapolates!(iso, extrapolates, stepsize=extrapolation)
 
@@ -177,14 +208,14 @@ function runadaptive!(iso; generations=1, iter=100, cutoff=Inf, extrapolates=0, 
             iso.data = iso.data[end-cutoff+1:end]
         end
 
-        t_train += @elapsed run!(iso, iter, showprogress=false)
+        t_train += @elapsed run!(iso, iter, showprogress=generations==1)
 
         ProgressMeter.next!(p;
             showvalues=() -> [
                 (:generation, g),
                 (:loss, iso.losses[end]),
                 (:iterations, length(iso.losses)),
-                (:data, size(getys(iso.data))),
+                (:data, size(propfeatures(iso.data))),
                 ("t_train, t_extra, t_kde", (t_train, t_extra, t_kde)),
                 ("simulated time", "$(simulationtime(iso))"), #TODO: doesnt work with cutoff
                 (:macrorates, exit_rates(iso))],
@@ -219,7 +250,7 @@ function chi_exit_rate(x, Kx, tau)
     return α + β
 end
 
-chi_exit_rate(iso::Iso) = chi_exit_rate(iso.model(getxs(iso.data)), koopman(iso.model, getys(iso.data)), OpenMM.stepsize(iso.data.sim) * OpenMM.steps(iso.data.sim))
+chi_exit_rate(iso::Iso) = chi_exit_rate(iso.model(features(iso.data)), koopman(iso.model, propfeatures(iso.data)), OpenMM.stepsize(iso.data.sim) * OpenMM.steps(iso.data.sim))
 
 
 function exit_rates(x, kx, tau)
@@ -230,10 +261,15 @@ function exit_rates(x, kx, tau)
     return -1 / tau .* [p > 0 ? Base.log(p) : NaN for p in diag(P)]
 end
 
-koopman(iso::Iso) = koopman(iso.model, getys(iso.data))
+koopman(iso::Iso) = koopman(iso.model, propfeatures(iso.data))
 
 exit_rates(iso::Iso) = exit_rates(cpu(chis(iso)), cpu(koopman(iso)), lagtime(iso.data.sim))
 
+function koopman_variance(iso, ys=iso.data.coords[2])
+    chi = chicoords(iso, ys)
+    i, k, n = size(chi)
+    sum(abs2, chi .- (sum(chi, dims=2) ./ k)) ./ i ./ n
+end
 
 """
     simulationtime(iso::Iso)
@@ -250,12 +286,12 @@ end
 simulationtime(iso::Iso) = simulationtime(iso.data)
 
 """
-    savecoords(path::String, iso::Iso, coords::AbstractMatrix=getcoords(iso.data); sorted=true, aligned=true)
+    savecoords(path::String, iso::Iso, coords::AbstractMatrix=coords(iso.data); sorted=true, aligned=true)
 
 Save the coordinates of the specified matrix of coordinates to a file, using the molecule in `iso` as a template.
 If `sorted` the sort the coordinates by their increasing χ value. If `align` then align each frame to the previous one.
 """
-function savecoords(path::String, iso::Iso, coords::AbstractMatrix=getcoords(iso.data); sorted=true, aligned=true)
+function savecoords(path::String, iso::Iso, coords::AbstractMatrix=coords(iso.data); sorted=true, aligned=true)
     if sorted
         coords = coords[:, cpu(sortperm(dropdims(chicoords(iso, coords), dims=1)))]
     end
@@ -295,6 +331,3 @@ function load(path::String)
     iso = JLD2.load(path, "iso")
     return iso
 end
-
-getxs(iso::Iso) = iso.data.coords[1]
-getys(iso::Iso) = iso.data.coords[2]
