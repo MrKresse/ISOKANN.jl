@@ -24,35 +24,88 @@ Compute the reaction path by integrating ∇χ with orthogonal energy minimizati
 - `x0`: The starting point for the reaction path computation.
 - `steps=100`: The number of steps to take along the reaction path.
 """
-function reactionpath_minimum(iso::Iso, x0=randomcoords(iso); steps=101, xtol=1e-3, extrasteps=0)
+function reactionpath_minimum(iso::Iso, x0=randomcoords(iso); steps=101, xtol=1e-3, extrasteps=0, kwargs...)
 
     #iso = cpu(iso) # TODO: find another solution
 
-    xs = energyminimization_projected(iso, x0; xtol) #|> gpu
+    xs = energyminimization_projected(iso, x0; xtol,kwargs...) #|> gpu
     chi = chicoords(iso, xs) |> myonly
 
     steps2 = max(floor(Int, steps * (1 - chi)) + extrasteps, 0)
     steps1 = max(floor(Int, steps * chi) + extrasteps, 0)
     stepsize = 1 / steps
 
-    x1 = reactionintegrator(iso, xs; steps=steps1, stepsize, direction=-1, xtol)[:, end:-1:1]
-    x2 = reactionintegrator(iso, xs; steps=steps2, stepsize, direction=1, xtol)
+    x1 = reactionintegrator(iso, xs; steps=steps1, stepsize, direction=-1, xtol, kwargs...)[:, end:-1:1]
+    x2 = reactionintegrator(iso, xs; steps=steps2, stepsize, direction=1, xtol, kwargs...)
 
     hcat(x1, xs, x2)
 end
 
-function reactionintegrator(iso::Iso, x0; steps=10, stepsize=0.01, direction=1, xtol)
+function reactionintegrator(iso::Iso, x0; steps=10, stepsize=0.01, direction=1, xtol, kwargs...)
     x = copy(x0)
     xs = similar(x0, length(x0), steps)
     @showprogress for i in 1:steps
         dchi = dchidx(iso, x)
         dchi .*= direction / norm(dchi)^2
         x += dchi .* stepsize
-        x = energyminimization_projected(iso, x; xtol)
+        x = energyminimization_projected(iso, x; xtol, kwargs...)
+        #x = relax_water(iso,x)
         xs[:, i] .= x
     end
     return xs
 end
+
+function relax_water(iso::Iso, x; relax_steps=300)
+    sim = iso.data.sim
+    inds = map(sim.pysim.topology.atoms()) do a
+        a.residue.name == "HOH"
+    end
+    if sum(inds)==0
+        return x
+    end
+    v = zeros(3*sum(inds)) # this should be either provided or drawn from the Maxwell Boltzmann distribution
+    kBT = 0.008314463 * OpenMM.temp(sim)
+    #kBT = 0.008314463 * 350
+    dt = OpenMM.stepsize(sim)
+    gamma = OpenMM.friction(sim)
+    m = repeat(OpenMM.masses(sim), inner=3)
+    m = reshape(m, 3, :)
+    m_water = m[:,inds]
+    m_water = vec(m_water)
+   # fproj = zeros(1,relax_steps)
+
+    for i in 1:relax_steps
+        #PBC
+        OpenMM.setcoords(sim,x)
+        x = getcoords(sim)
+        f = OpenMM.force(sim, x,reclaim=false)  
+        x = reshape(x, 3, :)
+        f = reshape(f, 3, :)
+        #water forces and positions
+        x_water = x[:,inds]
+        f_water = f[:,inds]
+"""
+        solute_inds = inds.==0
+        f_solute = f[:,solute_inds]
+        f_solute= vec(f_solute)
+        dchi = ISOKANN.dchidx(cpu(iso),vec(x))
+        dchi = dchi ./ norm(dchi)
+        dchi=reshape(dchi,3,:)
+        fproj[i] = dot(f_solute, vec(dchi[:,solute_inds]))
+"""
+        x_water = vec(x_water)
+        f_water = vec(f_water)
+        #update water
+        x_water = OpenMM.langevin_step!(x_water,v,f_water,m_water,gamma,kBT,dt)
+        
+        x_water = reshape(x_water,3,:)
+        x[:,inds]=x_water
+        x=vec(x) 
+    end
+
+    return x
+end
+
 
 energyminimization_projected(iso, x; kwargs...) = energyminimization_chilevel(iso, x; kwargs...)
 
@@ -142,7 +195,7 @@ end
 
 Local energy minimization on the current levelset of the chi function
 """
-function energyminimization_chilevel(iso, x0; f_tol=1e-3, alphaguess=1e-5, iterations=20, show_trace=false, skipwater=false, algorithm=Optim.GradientDescent, xtol=nothing)
+function energyminimization_chilevel(iso, x0; f_tol=1e-5, alphaguess=1e-4, iterations=100, show_trace=false, skipwater=false, algorithm=Optim.GradientDescent, xtol=nothing, eta=nothing)
     sim = iso.data.sim
     x = copy(x0) .|> Float64
 
@@ -159,7 +212,7 @@ function energyminimization_chilevel(iso, x0; f_tol=1e-3, alphaguess=1e-5, itera
 
 
     linesearch = Optim.LineSearches.HagerZhang(alphamax=alphaguess)
-    alg = algorithm(; linesearch, alphaguess, manifold)
+    alg = algorithm(; linesearch, alphaguess, manifold,eta)
 
 
     o = Optim.optimize(U, dU, x, alg, Optim.Options(; iterations, f_tol, show_trace,); inplace=false)

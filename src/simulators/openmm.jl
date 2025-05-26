@@ -291,6 +291,49 @@ function trajectory(sim::OpenMMSimulation{Nothing}, steps=steps(sim); saveevery=
     return xs
 end
 
+function trajectory_biased(sim::OpenMMSimulation{Nothing}, steps=steps(sim); bias=nothing,magnitude=nothing, saveevery=1, x0=getcoords(sim), resample_velocities=false, throw=false, showprogress=true, reclaim=true)
+    reclaim && claim_memory(sim)
+    n = div(steps, saveevery)
+    xs = similar(x0, length(x0), n)
+    int = sim.pysim.context.getIntegrator()
+
+    p = ProgressMeter.Progress(n)
+    done = 0
+    runtime = 0.0
+    lagtime = stepsize(sim) * saveevery / 1000
+    tottime = stepsize(sim) * steps / 1000
+
+    setcoords(sim, x0)
+    set_random_velocities!(sim)
+
+    direction = 0
+
+    try
+        for i in 1:n
+            resample_velocities && set_random_velocities!(sim)
+            runtime += @elapsed int.step(saveevery)
+            xs[:, i] = getcoords(sim)
+            direction, bias_vector = bias(xs[:,i], direction) 
+            bias_vector = direction.*bias_vector.*magnitude
+            setcoords(sim, xs[:,i].+bias_vector)
+            @assert norm(xs[:, i]) <= 1e5
+            done = i
+
+            simtime = round(lagtime * i, sigdigits=3)
+            showprogress && ProgressMeter.next!(p; showvalues=[("simulated time", "$simtime / $tottime ns"),
+                ("speed", "$(simtime/runtime) ns/s"), ("norm", norm(xs[:, i]))])
+        end
+    catch e
+        throw && rethrow()
+        println()
+        st = (e isa InterruptException) ? "InterruptException() " : sprint(showerror, e, catch_backtrace()) * "\n"
+        @warn """$(st)during trajectory simulation.
+        Returing partial result consisting of $done samples """
+        return xs[:, 1:done]
+    end
+    return xs
+end
+
 function minimize!(sim::OpenMMSimulation, coords=getcoords(sim); iter=0)
     setcoords(sim, coords)
     return sim.pysim.minimizeEnergy(maxIterations=iter)
@@ -438,6 +481,7 @@ function langevin_step!(x, v, F, m, gamma, kBT, dt)
     db = randn(length(x))
     @. v += 1 / m * ((F - gamma * v) * dt + sqrt(2 * gamma * kBT * dt) * db)
     @. x += v * dt
+    return x
 end
 
 function integrate_girsanov(sim::OpenMMSimulation; x0=getcoords(sim), steps=steps(sim), bias, reclaim=true)

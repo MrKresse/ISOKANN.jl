@@ -120,9 +120,9 @@ end
 # good colors
 # berlin, delta, roma, tofino, tokyo
 
-scatter_ramachandran(iso::Iso) = scatter_ramachandran(getcoords(iso.data) |> cpu, iso.model(getxs(iso.data)) |> cpu |> vec)
+scatter_ramachandran(iso::Iso;kwargs...) = scatter_ramachandran(getcoords(iso.data) |> cpu, iso.model(getxs(iso.data)) |> cpu |> vec;kwargs...)
 
-scatter_ramachandran(x, model; kwargs...) = scatter_ramachandran(x, vec(model(x)))
+scatter_ramachandran(x, model; kwargs...) = scatter_ramachandran(x, vec(model(x)); kwargs...)
 scatter_ramachandran(x, mat::AbstractMatrix; kwargs...) = plot(map(eachrow(mat)) do row
     scatter_ramachandran(x, vec(row))
 end...)
@@ -133,7 +133,7 @@ function scatter_ramachandran(x::AbstractMatrix, z::Union{AbstractVector,Nothing
     z = cpu(z)
     scatter(ph, ps, marker_z=z, xlims=[-pi, pi], ylims=[-pi, pi],
         markersize=3, markerstrokewidth=0, markeralpha=1, markercolor=:tofino, legend=false,
-        xlabel="\\phi", ylabel="\\psi", title="Ramachandran", ; kwargs...
+        xlabel="\\phi", ylabel="\\psi", ; kwargs...
     )
 end
 

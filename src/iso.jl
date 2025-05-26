@@ -142,16 +142,18 @@ resample_strat!(iso, ny; kwargs...) = (iso.data = resample_strat(iso.data, iso.m
 gpu(iso::Iso) = Iso(Flux.gpu(iso.model), Flux.gpu(iso.opt), Flux.gpu(iso.data), iso.transform, iso.losses, gpu.(iso.loggers), iso.minibatch)
 cpu(iso::Iso) = Iso(Flux.cpu(iso.model), Flux.cpu(iso.opt), Flux.cpu(iso.data), iso.transform, iso.losses, iso.loggers, iso.minibatch)
 
-function Base.show(io::IO, mime::MIME"text/plain", iso::Iso)
-    println(io, typeof(iso), ":")
-    println(io, " model: $(iso.model.layers)")
-    println(io, " transform: $(iso.transform)")
-    println(io, " opt: $(optimizerstring(iso.opt))")
-    println(io, " minibatch: $(iso.minibatch)")
-    println(io, " loggers: $(length(iso.loggers))")
-    println(io, " data: $(size.(getobs(iso.data))), $(typeof(getobs(iso.data)))")
-    length(iso.losses) > 0 && println(io, " loss: $(iso.losses[end]) (length: $(length(iso.losses)))")
-end
+
+#function Base.show(io::IO, mime::MIME"text/plain", iso::Iso)
+#    println(io, typeof(iso), ":")
+#    println(io, " model: $(iso.model.layers)")
+#    println(io, " transform: $(iso.transform)")
+#    println(io, " opt: $(optimizerstring(iso.opt))")
+#    println(io, " minibatch: $(iso.minibatch)")
+#    println(io, " loggers: $(length(iso.loggers))")
+#    println(io, " data: $(size.(getobs(iso.data))), $(typeof(getobs(iso.data)))")
+#    length(iso.losses) > 0 && println(io, " loss: $(iso.losses[end]) (length: $(length(iso.losses)))")
+#end
+
 
 """
     runadaptive!(iso; generations=1, nx=10, iter=100, cutoff=Inf)

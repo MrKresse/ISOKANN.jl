@@ -51,6 +51,7 @@ import StatsBase
 import Flux
 import PCCAPlus
 import LinearAlgebra
+import LineSearches
 
 import MLUtils: numobs
 import Flux: cpu, gpu
