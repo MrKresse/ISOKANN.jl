@@ -78,24 +78,41 @@ end
 
 
 """
-    data_from_trajectory(xs::AbstractMatrix; reverse=false)
+    data_from_trajectory(xs::AbstractMatrix; lag=1, reverse=false, stride=1)
 
-Generate the lag-1 data from the trajectory `xs`.
-If `reverse` is true, also take the time-reversed lag-1 data.
+Generate lag-`lag` training data from trajectory `xs`.
+
+Returns (x, y) such that:
+  x[:, i] = xs[:, t]
+  y[:, :, i] = xs[:, t + lag]
+
+If `reverse=true`, also includes time-reversed pairs.
+`stride` subsamples the time indices.
 """
-function data_from_trajectory(xs::AbstractMatrix; reverse=false, stride=1)
+function data_from_trajectory(xs::AbstractMatrix; lag::Int=1, reverse::Bool=false, stride::Int=1)
+    @assert lag ≥ 1 "lag must be ≥ 1"
+    T = size(xs, 2)
+    @assert T > lag "trajectory too short for lag=$lag"
+
     if reverse
-        @views ys = stack([xs[:, 1:stride:end-2], xs[:, 3:stride:end]], dims=2) 
-        #ys = similar(xs, size(xs, 1), 2, size(xs, 2) - 2)
-        #@views ys[:, 1, :] .= xs[:, 3:end]
-        #@views ys[:, 2, :] .= xs[:, 1:end-2]
-        xs = xs[:, 2:stride:end-1]
+        # forward + backward pairs
+        @views ys = stack(
+            [
+                xs[:, 1:stride:(end - lag - lag)],
+                xs[:, (1 + 2lag):stride:end]
+            ],
+            dims=2
+        )
+        xs = xs[:, (1 + lag):stride:(end - lag)]
     else
-        ys = unsqueeze(xs[:, 2:stride:end], dims=2)
-        xs = xs[:, 1:stride:end-1]
+        # forward-only pairs
+        @views ys = unsqueeze(xs[:, (1 + lag):stride:end], dims=2)
+        xs = xs[:, 1:stride:(end - lag)]
     end
+
     return xs, ys
 end
+
 
 function data_from_trajectories(xss::AbstractVector{<:AbstractMatrix}; kwargs...)
     mapreduce(mergedata, xss) do xs

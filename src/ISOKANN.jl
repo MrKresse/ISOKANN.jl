@@ -1,6 +1,15 @@
-#__precompile__(false)
+__precompile__()
 
 module ISOKANN
+# Preload matching OpenSSL to avoid system libcrypto conflicts on HPC
+if Sys.islinux()
+    try
+        using OpenSSL_jll, Libdl
+        Libdl.dlopen(OpenSSL_jll.libcrypto_path, Libdl.RTLD_GLOBAL)
+        Libdl.dlopen(OpenSSL_jll.libssl_path,    Libdl.RTLD_GLOBAL)
+    catch
+    end
+end
 
 #using Startup           # precompiles most used packages
 #include("forced/IsoForce.jl")
@@ -124,8 +133,8 @@ include("reactionpath.jl")
 #include("IsoMu/IsoMu.jl")
 #include("vgv/vgv.jl")
 
-include("utils/makie.jl")
-include("utils/bonito.jl")
+#include("utils/makie.jl")
+#include("utils/bonito.jl")
 
 include("utils/picking.jl")
 end

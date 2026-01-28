@@ -1,3 +1,6 @@
+using Statistics
+using ForwardDiff
+
 """
      marginal_free_energy(iso::Iso;nbins)
 
@@ -246,4 +249,293 @@ function sample_coords(iso::Iso,n_points;xs=hcat(iso.data.coords[1],iso.data.coo
     return sampled_coords
 end
   
-  
+# ================= OPES 1D (periodic + Neff bandwidth + normalized KDE + WT + barrier ΔE) ===================
+
+mutable struct OPES1D
+    beta::AbstractFloat
+    stride::Int
+    sigma::AbstractFloat
+    Vcap::AbstractFloat
+    centers::Vector{AbstractFloat}
+    stepcount::Int
+    flat_lo::AbstractFloat
+    flat_hi::AbstractFloat
+    warmup::Int
+    periodic::Bool
+    period::AbstractFloat
+
+    # Neff-based σ
+    adapt_sigma::Bool
+    sigma0::AbstractFloat
+    w_sum::AbstractFloat
+    w2_sum::AbstractFloat
+
+    # monitoring
+    sigma_factor::AbstractFloat
+    μ::AbstractFloat
+    m2::AbstractFloat
+    nobs::Int
+
+    # WT + barrier
+    wt::Bool                # enable WT scaling DOES NOT WORK YET
+    gamma::AbstractFloat          # bias factor (>1 typically); may be set independently
+    ΔE::AbstractFloat             # barrier parameter (kJ/mol)
+    eps_reg::AbstractFloat        # ε derived from (β, γ, ΔE)
+end
+
+# --- internal: derive ε from (β, γ, ΔE) 
+@inline function _derive_eps(beta::AbstractFloat, gamma::AbstractFloat, ΔE::AbstractFloat)
+    # ε = e^{-βΔE} / (1 - 1/γ)
+    # guard against γ≈1
+    @assert gamma > 1.0 "gamma must be > 1.0 to define ε from ΔE (set wt=false for flat-OPES)."
+    return exp(-beta * ΔE) / (1 - 1/gamma)
+end
+
+function OPES1D(; beta, stride=500, sigma, Vcap=75.0,
+                 flat_lo=-Inf, flat_hi=Inf, warmup=0,
+                 periodic=false, period=2π,
+                 adapt_sigma=true, sigma_factor=1/10,
+                 # WT+barrier params
+                 wt=true, ΔE=50.0, gamma=nothing)
+
+    # If gamma not provided, link it to ΔE: γ = β ΔE
+    γ = isnothing(gamma) ? (beta * ΔE) : gamma
+    @assert γ ≥ 1.0 "gamma must be ≥ 1.0 (set >1 for WT; =1 is flat-OPES scaling)."
+
+    opes = OPES1D(beta, stride, sigma, Vcap, AbstractFloat[], 0,
+                  flat_lo, flat_hi, warmup, periodic, period,
+                  adapt_sigma, sigma, 1.0, 1.0,
+                  sigma_factor, 0.0, 0.0, 0,
+                  wt, γ, ΔE, _derive_eps(beta, γ, ΔE))
+    return opes
+end
+
+# ---------- logging ----------
+mutable struct OPESLog
+    xis::Vector{AbstractFloat}
+    Vs::Vector{AbstractFloat}
+    saveevery::Int
+    step::Int
+end
+
+# ================ internals ================
+
+@inline function delta_cv(opes::OPES1D, ξ::AbstractFloat, c::AbstractFloat)
+    if !opes.periodic
+        return ξ - c
+    else
+        p = opes.period
+        return mod(ξ - c + p/2, p) - p/2
+    end
+end
+
+# Properly normalized log-KDE of the centers with common σ:
+# log p̂(ξ) = log( (1/M) * Σ_k ϕσ(ξ - c_k) ),  ϕσ(u)=(1/(σ√(2π)))exp(-u²/(2σ²))
+function logkde(opes::OPES1D, ξ::AbstractFloat)
+    M = length(opes.centers)
+    M == 0 && return -Inf
+    invσ = 1/opes.sigma
+    invσ2 = invσ^2
+    maxa = -Inf
+    @inbounds for c in opes.centers
+        d = delta_cv(opes, ξ, c)
+        a = -0.5 * d*d * invσ2
+        maxa = (a > maxa) ? a : maxa
+    end
+    s = 0.0
+    @inbounds for c in opes.centers
+        d = delta_cv(opes, ξ, c)
+        s += exp(-0.5 * d*d * invσ2 - maxa)
+    end
+    lognorm = -log(M) - log(opes.sigma) - 0.5*log(2π)
+    return log(s + eps()) + maxa + lognorm
+end
+
+# ∂ξ log p̂(ξ) (constants cancel)
+function dlogkde_dξ(opes::OPES1D, ξ::AbstractFloat)
+    M = length(opes.centers)
+    M == 0 && return 0.0
+    invσ2 = 1/(opes.sigma^2)
+    num = 0.0; den = 0.0
+    @inbounds for c in opes.centers
+        d = delta_cv(opes, ξ, c)
+        w = exp(-0.5 * d^2 * invσ2)
+        den += w
+        num += w * (-d) * invσ2
+    end
+    return den > 0 ? num/den : 0.0
+end
+
+# Bias with WT + barrier:
+# V = (1/(βγ)) log( p̂ + ε ). With ε from ΔE ⇒ min V = -ΔE when p̂→0.
+# Clamp V to ±Vcap and zero force if clamped.
+function bias_and_grad_ξ(opes::OPES1D, ξ::AbstractFloat)
+    ℓp  = logkde(opes, ξ)
+    dℓp = dlogkde_dξ(opes, ξ)
+
+    if opes.wt
+        α = 1.0 / (opes.beta * opes.gamma)
+        # log(p̂ + ε) = logaddexp(log p̂, log ε)
+        V_unc = α * log(exp(ℓp) + opes.eps_reg)
+        V     = clamp(V_unc, -opes.Vcap, opes.Vcap)
+        # d/dξ log(p̂ + ε) = (p̂' / (p̂ + ε))
+        dlog = dℓp * (exp(ℓp) / (exp(ℓp) + opes.eps_reg))
+        dVdξ = (V == V_unc) ? α * dlog : 0.0
+        return V, dVdξ
+    else
+        # flat target (OPES-E): V = (1/β) log p̂
+        V_unc = (1/opes.beta) * ℓp
+        V     = clamp(V_unc, -opes.Vcap, opes.Vcap)
+        dVdξ  = (V == V_unc) ? (1/opes.beta) * dℓp : 0.0
+        return V, dVdξ
+    end
+end
+
+@inline function _welford_update!(opes::OPES1D, ξ::AbstractFloat)
+    opes.nobs += 1
+    δ = ξ - opes.μ
+    opes.μ += δ / opes.nobs
+    opes.m2 += δ * (ξ - opes.μ)
+end
+
+# Neff σ schedule (d=1)
+@inline function _update_sigma_neff!(opes::OPES1D)
+    Neff = (opes.w_sum^2) / opes.w2_sum
+    scale = (Neff * 3 / 4) ^ (-1/5)                  # (d+2)/4 with d=1
+    opes.sigma = max(opes.sigma0 * scale, 1e-6)
+end
+
+# Lightweight optional compression (disabled by default)
+function maybe_compress!(opes::OPES1D; dt=0.0)
+    dt <= 0 && return
+    σ = opes.sigma
+    newc = opes.centers[end]
+    if length(opes.centers) >= 2
+        idx = argmin(abs.(opes.centers[1:end-1] .- newc) ./ σ)
+        dmin = abs(opes.centers[idx] - newc) / σ
+        if dmin < dt
+            opes.centers[idx] = 0.5*(opes.centers[idx] + newc)
+            pop!(opes.centers)
+        end
+    end
+end
+
+function maybe_deposit!(opes::OPES1D, ξ::AbstractFloat)
+    opes.stepcount += 1
+    _welford_update!(opes, ξ)
+
+    if opes.stepcount % opes.stride == 0
+        push!(opes.centers, ξ)
+        opes.w_sum  += 1.0
+        opes.w2_sum += 1.0
+        maybe_compress!(opes; dt=0.0)
+        if opes.adapt_sigma
+            _update_sigma_neff!(opes)
+        end
+    end
+
+    if opes.adapt_sigma && opes.warmup > 0 && opes.stepcount >= opes.warmup
+        opes.adapt_sigma = false
+    end
+    return nothing
+end
+
+# ================ closures ================
+
+function opes_bias_closure_with_log(opes::OPES1D; xi::Function, dxi_dr::Function, log::OPESLog)
+    return function B(q; t=nothing, sigma=nothing, F=nothing)
+        ξ = xi(q)
+        maybe_deposit!(opes, ξ)
+        V, dVdξ = bias_and_grad_ξ(opes, ξ)
+
+        log.step += 1
+        if log.step % log.saveevery == 0
+            push!(log.xis, ξ)
+            push!(log.Vs,  V)
+        end
+
+        if opes.stepcount < opes.warmup
+            return zeros(eltype(q), size(q))
+        end
+        g = dxi_dr(q)
+        return @. -dVdξ * g
+    end
+end
+
+function opes_bias_closure(opes::OPES1D; xi::Function, dxi_dr::Function)
+    return function B(q; t=nothing, sigma=nothing, F=nothing)
+        ξ = xi(q)
+        maybe_deposit!(opes, ξ)
+        if opes.stepcount < opes.warmup
+            return zeros(eltype(q), size(q))
+        end
+        _, dVdξ = bias_and_grad_ξ(opes, ξ)
+        g = dxi_dr(q)
+        return @. -dVdξ * g
+    end
+end
+
+# ================ helpers ================
+
+function estimate_sigma_phi(sim; steps=50_000, saveevery=100)
+    xs = ISOKANN.trajectory(sim, steps; saveevery=saveevery)
+    φs = [ISOKANN.phi(xs[:, i]) for i in 1:size(xs,2)]
+    return std(φs) / 10
+end
+
+function periodic_weighted_kde(xs::AbstractVector, ws::AbstractVector, grid::AbstractVector, bw::AbstractFloat)
+    y = zeros(length(grid))
+    inv2σ2 = 1.0/(2*bw^2)
+    inv_norm = 1/(bw*sqrt(2π))
+    @inbounds for (xi, wi) in zip(xs, ws)
+        @inbounds for m in -1:1
+            xc = xi + m*2π
+            @. y += wi * inv_norm * exp(- (grid - xc)^2 * inv2σ2)
+        end
+    end
+    dx = grid[2] - grid[1]
+    s = sum(y) * dx
+    return s > 0 ? y ./ s : y
+end
+
+@inline wrapdiff(φa, φb) = mod(φa - φb + π, 2π) - π
+
+function dphi_dx_periodic_FD(x::AbstractVector; idxs=nothing, h=1e-6)
+    N = length(x)
+    g = zeros(eltype(x), N)
+    idxs === nothing && (idxs = 1:N)
+    for i in idxs
+        xp = copy(x); xm = copy(x)
+        xp[i] += h;   xm[i] -= h
+        φp = phi_val(xp)
+        φm = phi_val(xm)
+        g[i] = wrapdiff(φp, φm) / (2h)
+    end
+    return g
+end
+
+function dphi_dx_periodic_AD(x::AbstractVector)
+    φ0 = phi_val(x)
+    ∇c = ForwardDiff.gradient(y -> cos(phi_val(y)), x)
+    ∇s = ForwardDiff.gradient(y -> sin(phi_val(y)), x)
+    return @. -sin(φ0) * ∇c + cos(φ0) * ∇s
+end
+
+# -------- convenience setters (recompute ε when ΔE or γ change) --------
+function set_barrier!(opes::OPES1D; ΔE=nothing, gamma=nothing)
+    if ΔE !== nothing
+        opes.ΔE = ΔE
+        if gamma === nothing && opes.wt
+            opes.gamma = opes.beta * ΔE    # tie γ to ΔE if user didn't override
+        end
+    end
+    if gamma !== nothing
+        @assert gamma ≥ 1.0
+        opes.gamma = gamma
+    end
+    if opes.wt
+        @assert opes.gamma > 1.0 "gamma must be > 1 to use a ΔE-derived ε."
+        opes.eps_reg = _derive_eps(opes.beta, opes.gamma, opes.ΔE)
+    end
+    return opes
+end

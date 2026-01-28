@@ -44,7 +44,7 @@ end
 function reactionintegrator(iso::Iso, x0; steps=10, stepsize=0.01, direction=1, xtol, kwargs...)
     x = copy(x0)
     xs = similar(x0, length(x0), steps)
-    @showprogress for i in 1:steps
+    for i in 1:steps
         dchi = dchidx(iso, x)
         dchi .*= direction / norm(dchi)^2
         x += dchi .* stepsize
@@ -195,7 +195,7 @@ end
 
 Local energy minimization on the current levelset of the chi function
 """
-function energyminimization_chilevel(iso, x0; f_tol=1e-5, alphaguess=1e-4, iterations=100, show_trace=false, skipwater=false, algorithm=Optim.GradientDescent, xtol=nothing, eta=nothing)
+function energyminimization_chilevel(iso, x0; f_reltol=1e-5, alphaguess=1e-4, iterations=100, show_trace=false, skipwater=false, algorithm=Optim.GradientDescent, xtol=nothing)
     sim = iso.data.sim
     x = copy(x0) .|> Float64
 
@@ -211,11 +211,11 @@ function energyminimization_chilevel(iso, x0; f_tol=1e-5, alphaguess=1e-4, itera
     end
 
 
-    linesearch = Optim.LineSearches.HagerZhang(alphamax=alphaguess)
-    alg = algorithm(; linesearch, alphaguess, manifold,eta)
+    linesearch = Optim.LineSearches.HagerZhang()
+    alg = algorithm(; linesearch, alphaguess, manifold)
 
 
-    o = Optim.optimize(U, dU, x, alg, Optim.Options(; iterations, f_tol, show_trace,); inplace=false)
+    o = Optim.optimize(U, dU, x, alg, Optim.Options(; iterations, f_reltol, show_trace,); inplace=false)
     return o.minimizer
 end
 
