@@ -45,8 +45,14 @@ scatter_ramachandran(iso)
 # estimate the exit rates, i.e. the metastability
 exit_rates(iso)
 
-# extract the reactive path
-save_reactive_path(iso, out="path.pdb")
+#extract the chi-MEP
+xs = reactionpath_minimum(iso)
+scatter_ramachandran(xs)
+
+#explain through the chi-sensitivity
+gradc= averageGradient(iso)
+gradf= featureGradient(iso)
+
 ```
 
 A more comprehensive example can be found in [`scripts/amore/vgvapg.jl`].
