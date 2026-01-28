@@ -1,6 +1,7 @@
 # ISOKANN
 
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://axsk.github.io/ISOKANN.jl/dev)
+This is a fork of the ISOKANN package, which implements AMORE-MD to study the mechanism of rare events.
 
 The ISOKANN.jl package implements the ISOKANN algorithm for the identification of macro-states of molecular systems. Its main features comprise of:
 - A flexible implementation of the ISOKANN core (`Iso`) (supporting 1D and N-D ISOKANN, customizable neural networks on a broad set of `SimulationData`)
@@ -27,7 +28,7 @@ using ISOKANN
 sim = OpenMMSimulation()
 
 # Sample the initial data for training of ISOKANN with 100 initial points and 5 koopman samples per point.
-data = isodata(sim, 100, 5)
+data = trajectorydata_bursts(sim,100,5)
 
 # create the ISOKANN training object
 iso = Iso(data)
@@ -48,7 +49,7 @@ exit_rates(iso)
 save_reactive_path(iso, out="path.pdb")
 ```
 
-A more comprehensive example simulating the folding of the chicken villin can be found in [`scripts/villin.jl`](scripts/villin.jl).
+A more comprehensive example can be found in [`scripts/amore/vgvapg.jl`].
 For further information consult the docstrings (e.g. `?Iso`).
 
 ## References
@@ -56,3 +57,4 @@ For further information consult the docstrings (e.g. `?Iso`).
 - [Rabben, Ray, Weber (2018) - ISOKANN: Invariant subspaces of Koopman operators learned by a neural network.](https://doi.org/10.1063/5.0015132)
 - [Sikorski, Ribera Borrell, Weber (2024) - Learning Koopman eigenfunctions of stochastic diffusions with optimal importance sampling and ISOKANN](http://dx.doi.org/10.1063/5.0140764)
 - [Sikorski, Rabben, Chewle, Weber (2024) - Capturing the Macroscopic Behaviour of Molecular Dynamics with Membership Functions](http://arxiv.org/abs/2404.10523)
+- [Kresse, Sikorski, Chewle, Sunkara, Weber (2025) - Revealing the Atomistic Mechanism of Rare Events in Molecular Dynamics](https://doi.org/10.48550/arXiv.2511.15514)
