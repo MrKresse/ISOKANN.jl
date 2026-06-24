@@ -39,7 +39,6 @@ for _ in 1:100
     xs_samples = iso.data.coords[1]
     chi_vals = cpu(ISOKANN.chis(iso))
     chi_vals = [chi_val[1] for chi_val in eachcol(chi_vals) ]
-    inds = (chi_vals .> 0.49) .& (chi_vals .< 0.51)
     x0s = xs_samples[:,inds]
     j = rand(1:size(x0s, 2))
 
